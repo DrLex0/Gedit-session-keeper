@@ -1,0 +1,11 @@
+[Plugin]
+Loader=python3
+Module=sessionkeeper
+IAge=3
+Name=Session Keeper
+Description=Restores files in windows and tabs on startup. (Quit and reopen Gedit after enabling plugin to activate it.)
+Authors=Alexander Thomas <doctor.lex@gmail.removethis.com>
+Copyright=Copyright © 2019 Alexander Thomas
+Website=https://github.com/DrLex0/gedit-session-keeper
+Version=1.0.0
+

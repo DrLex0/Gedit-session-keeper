@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="be.dr-lex.gedit.plugins.sessionkeeper.gschema" path="/be/dr-lex/gedit/plugins/sessionkeeper/">
+    <key type="s" name="state">
+      <default>''</default>
+      <summary>Window states</summary>
+      <description>A list of the URIs per window to restore when Gedit is started.</description>
+    </key>
+  </schema>
+</schemalist>
+
