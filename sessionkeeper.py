@@ -97,6 +97,9 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
     @classmethod
     def save_state(cls):
         """Persist the global state of all windows in gsettings."""
+        if not cls.settings:
+            # Things are badly broken
+            return
         with cls.global_lock:
             payload = json.dumps(cls.global_state)
             cls.settings.set_value('state', GLib.Variant("s", payload))
@@ -140,7 +143,7 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
 
     @classmethod
     def schedule_global_pending(cls):
-        """Schedule a process_global_pending call after slightly longer than EXIT_TIMEOUT.
+        """Schedule a process_global_pending call slightly beyond EXIT_TIMEOUT.
         No global timer must be pending when calling this."""
         SK_LOG.debug("Scheduling global_pending...")
         with cls.global_lock:
@@ -206,7 +209,7 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
             SKeeperAppActivatable.save_state()
 
     def schedule_pending(self):
-        """Schedule a process_pending call after slightly longer than EXIT_TIMEOUT.
+        """Schedule a process_pending call slightly beyond EXIT_TIMEOUT.
         No timer must be pending when calling this."""
         SK_LOG.debug("Scheduling process_pending...")
         with self.timer_lock:
@@ -269,7 +272,14 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
         # Do not schedule anything, this will happen in dump_final_states
         return False
 
-    def on_tab_add_event(self, window, tab=None):
+    def close_empty_tab(self):
+        """If the active tab is not a loaded file, close it."""
+        tab = self.window.get_active_tab()
+        if not tab.get_document().get_location() and tab.get_state() == 0:
+            SK_LOG.debug('Closing empty tab')
+            self.window.close_tab(tab)
+
+    def on_tab_add_event(self, _window, tab=None):
         """When adding a tab, immediately apply the new state."""
         if SKeeperAppActivatable.loading:
             return False
@@ -279,9 +289,10 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
             # opened right after the plugin has loaded everything.
             if (SKeeperAppActivatable.global_state and
                     time.time() - SKeeperAppActivatable.loaded_time < OPEN_TIMEOUT):
-                SK_LOG.debug('  killing default empty tab!')
-                #window.close_tab(tab)  # FAIL. Causes core dump!?
-                return True # whatever!!!
+                SK_LOG.debug('  scheduling removal of default empty tab')
+                # We can't just call close_tab(tab) here: causes a core dump, maybe because
+                # Gedit still tries to do something with the tab after sending this event
+                GLib.idle_add(self.close_empty_tab)
             # Even if we keep the tab, we're not interested in it
             return False
 
