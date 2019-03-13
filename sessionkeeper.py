@@ -1,15 +1,33 @@
 """
-Session Keeper, a session saver for Gedit 3 that actually works.
+Session Keeper, a session saver for Gedit 3 that simply works.
 This is kept as simple as possible because bloat begets bugs.
-Currently it only restores files and tab groups per window, no other fancy things.
+Currently it only restores files and tab groups per window, no other fancy
+things.
 
-This relies on a somewhat ugly approach using timers to discern between user actions and Gedit
-closing things while it is quitting. State updates that aren't certain to be user-initiated, are
-postponed for a while. If Gedit really quits, the postponed updates are discarded before they can
-be executed. This offers a more consistent result than approaches that attempt to use
-GLib.idle_add() or that try to intercept quit events. Those two approaches fail when there is only
-one app window and the user closes it. Gedit then quits without sending any quit actions. Idle
-calls are also usually still executed in that case.
+This relies on a somewhat ugly approach using timers to discern between user
+actions and Gedit closing things while it is quitting. State updates that
+aren't certain to be user-initiated, are postponed for a while. If Gedit really
+quits, the postponed updates are discarded before they can be executed.
+This offers a more consistent result than approaches that attempt to use
+GLib.idle_add() or that try to intercept quit events. Those two approaches fail
+when there is only one app window and the user closes it. Gedit then quits
+without sending any quit actions. Idle calls are also usually still executed in
+that case.
+
+Copyright (C) 2019  Alexander Thomas
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import json
 import logging
