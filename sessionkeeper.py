@@ -109,7 +109,7 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
     def __init__(self):
         GObject.Object.__init__(self)
         SK_LOG.info('Created new SessionKeeper AppActivatable, timeouts: %g, %g',
-                     self.exit_timeout, self.launch_timeout)
+                    self.exit_timeout, self.launch_timeout)
 
     def do_activate(self):
         SK_LOG.debug('AA received activate event')
@@ -368,21 +368,40 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
         self.schedule_pending()
         return False
 
+    def restore_tab_groups(self, groups):
+        SK_LOG.debug("    Loading %d tab group(s)", len(groups))
+        group_number = 0
+        for files in groups:
+            group_number += 1
+            SK_LOG.debug("      Loading %d files in group %d", len(files), group_number)
+            tab_to_be_closed = None
+            if group_number > 1:
+                self.window.activate_action('new-tab-group')
+                # The tab group will be created with an empty document
+                tab_to_be_closed = self.window.get_active_tab()
+
+            for document_uri in files:
+                location = Gio.file_new_for_uri(document_uri)
+                self.window.create_tab_from_location(location, None, 0,
+                                                     0, False, True)
+                if tab_to_be_closed:
+                    self.window.close_tab(tab_to_be_closed)
+                    tab_to_be_closed = None
+
     def on_window_show(self, _window, _data=None):
         """A newly spawned instance looks for any unclaimed IDs in the
         global_config. If there are any, then grab one and load its files,
         otherwise mark the loading phase as finished."""
         SK_LOG.debug('on_window_show')
+        if not SKeeperAppActivatable.settings:
+            return
         if not SKeeperAppActivatable.loading:
             SK_LOG.debug('  ... but no longer loading')
             return
 
-        if not SKeeperAppActivatable.settings:
-            return
+        saved_state = {}
         payload = SKeeperAppActivatable.settings.get_value('window-files').get_string()
         SK_LOG.debug('  JSON dump read: %s', payload)
-
-        saved_state = {}
         if payload:
             try:
                 saved_state = json.loads(payload)
@@ -409,25 +428,7 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
 
             SK_LOG.debug("  Claiming %s", win_id)
             self.uuid = win_id
-            SK_LOG.debug("    Groups in %s: %d", win_id, len(groups))
-            group_number = 0
-            for files in groups:
-                group_number += 1
-                SK_LOG.debug("      Files in group %d: %d", group_number, len(files))
-                tab_to_be_closed = None
-                if group_number > 1:
-                    self.window.activate_action('new-tab-group')
-                    # The tab group will be created with an empty document
-                    tab_to_be_closed = self.window.get_active_tab()
-
-                for document_uri in files:
-                    location = Gio.file_new_for_uri(document_uri)
-                    self.window.create_tab_from_location(location, None, 0,
-                                                         0, False, True)
-                    if tab_to_be_closed:
-                        self.window.close_tab(tab_to_be_closed)
-                        tab_to_be_closed = None
-
+            self.restore_tab_groups(groups)
             SKeeperAppActivatable.files_per_window[win_id] = self.get_state()
             break
 

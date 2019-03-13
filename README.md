@@ -25,7 +25,7 @@ Gedit 2.x.**
 
 1. Download the source code from this repository: 
 
-   <https://github.com/Drlex0/gedit-session-keeper>
+   <https://github.com/Drlex0/Gedit-session-keeper>
 
    You can either use `git clone`, or download the code as an archive.
 
