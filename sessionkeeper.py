@@ -50,9 +50,10 @@ PLUGIN_PATH = os.path.dirname(os.path.realpath(__file__))
 SCHEMAS_PATH = os.path.join(PLUGIN_PATH, 'sessionkeeper.schemas')
 
 SK_LOG = logging.getLogger('SessionKeeper')
+SK_LOG.setLevel(logging.INFO)
 # For debugging, the following lines are very handy
-SK_LOG.setLevel(logging.DEBUG)
-SK_LOG.addHandler(logging.FileHandler("/tmp/SessionKeeper.log"))
+#SK_LOG.setLevel(logging.DEBUG)
+#SK_LOG.addHandler(logging.FileHandler("/tmp/SessionKeeper.log"))
 
 
 def get_settings():
@@ -63,12 +64,12 @@ def get_settings():
             False
         )
     except Exception as err:
-        SK_LOG.error("FATAL: could not load schema source from %s: %s", SCHEMAS_PATH, str(err))
+        SK_LOG.critical("FATAL: could not load schema source from %s: %s", SCHEMAS_PATH, str(err))
         return None
 
     schema = schema_source.lookup(SETTINGS_SCHEMA, False)
     if not schema:
-        SK_LOG.error("FATAL: could not load settings schema")
+        SK_LOG.critical("FATAL: could not load settings schema")
         return None
     schema_path = "/" + "/".join(SETTINGS_SCHEMA.split(".")[:-1]) + "/"
     return Gio.Settings.new_full(schema, None, schema_path)
@@ -107,7 +108,7 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
 
     def __init__(self):
         GObject.Object.__init__(self)
-        SK_LOG.debug('Created new AA instance, timeouts: %g, %g',
+        SK_LOG.info('Created new SessionKeeper AppActivatable, timeouts: %g, %g',
                      self.exit_timeout, self.launch_timeout)
 
     def do_activate(self):
