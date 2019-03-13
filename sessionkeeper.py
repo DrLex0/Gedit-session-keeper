@@ -315,16 +315,21 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
         if SKeeperAppActivatable.loading:
             return False
         SK_LOG.debug('on_tab_add_event in %s', self.uuid)
-        if not tab.get_document().get_location():
-            # Yet another timer heuristic to detect the default empty tab being
-            # opened right after the plugin has loaded everything.
-            if SKeeperAppActivatable.files_per_window and SKeeperAppActivatable.just_loaded():
-                SK_LOG.debug('  scheduling removal of default empty tab')
-                # We can't just call close_tab(tab) here: causes a core dump, maybe because
-                # Gedit still tries to do something with the tab after sending this event
-                GLib.idle_add(self.close_empty_tab)
-            # Even if we keep the tab, we're not interested in it
-            return False
+        if SKeeperAppActivatable.just_loaded():
+            # For consistency, bring this window to front, especially desirable if Gedit
+            # was launched by opening a file
+            GLib.idle_add(self.window.present)
+
+            if not tab.get_document().get_location():
+                # Yet another timer heuristic to detect the default empty tab being
+                # opened right after the plugin has loaded everything.
+                if SKeeperAppActivatable.files_per_window:
+                    SK_LOG.debug('  scheduling removal of default empty tab')
+                    # We can't just call close_tab(tab) here: causes a core dump, maybe because
+                    # Gedit still tries to do something with the tab after sending this event
+                    GLib.idle_add(self.close_empty_tab)
+                # Even if we keep the tab, we're not interested in it
+                return False
 
         self.cancel_pending()
         SKeeperAppActivatable.files_per_window[self.uuid] = self.get_state()
