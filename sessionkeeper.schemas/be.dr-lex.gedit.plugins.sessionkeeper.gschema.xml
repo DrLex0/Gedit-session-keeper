@@ -1,10 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="be.dr-lex.gedit.plugins.sessionkeeper.gschema" path="/be/dr-lex/gedit/plugins/sessionkeeper/">
-    <key type="s" name="state">
+    <key type="s" name="window-files">
       <default>''</default>
-      <summary>Window states</summary>
-      <description>A list of the URIs per window to restore when Gedit is started.</description>
+      <summary>Window file lists</summary>
+      <description>JSON dump of a dict containing URIs per window to restore when Gedit is started. Values are lists of lists, one list per tab group, each containing a list of file URIs.</description>
+    </key>
+    <key type="d" name="exit-timeout">
+      <default>2.0</default>
+      <summary>Exit timeout</summary>
+      <description>Any change in tab states is persisted if Gedit is still running this many seconds later.</description>
+    </key>
+    <key type="d" name="launch-timeout">
+      <default>1.0</default>
+      <summary>Launch timeout</summary>
+      <description>If documents have been restored, then a new empty file tab will be suppressed if it is created within this many seconds.</description>
     </key>
   </schema>
 </schemalist>

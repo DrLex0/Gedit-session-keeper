@@ -1,13 +1,15 @@
 """
 Session Keeper, a session saver for Gedit 3 that actually works.
 This is kept as simple as possible because bloat begets bugs.
-Currently it only restores files per window, no other fancy things.
+Currently it only restores files and tab groups per window, no other fancy things.
 
-The tricky part is that there is _no_ simple way to discern between the user closing tabs or
-windows, or Gedit closing things because it is quitting. Therefore this plugin relies on timing
-and postpones state updates of tab and window close events. If Gedit really quits, the postponed
-update is killed before it can be executed. It's slightly ugly but it generally works. Only on
-very slow systems this may produce unexpected results.
+This relies on a somewhat ugly approach using timers to discern between user actions and Gedit
+closing things while it is quitting. State updates that aren't certain to be user-initiated, are
+postponed for a while. If Gedit really quits, the postponed updates are discarded before they can
+be executed. This offers a more consistent result than approaches that attempt to use
+GLib.idle_add() or that try to intercept quit events. Those two approaches fail when there is only
+one app window and the user closes it. Gedit then quits without sending any quit actions. Idle
+calls are also usually still executed in that case.
 """
 import json
 import logging
@@ -15,14 +17,13 @@ import os
 import threading
 import time
 import uuid
+
+import gi
+gi.require_version('Gtk', '3.0')
+gi.require_version('Gedit', '3.0')
+
 from gi.repository import GObject, GLib, Gio, Gedit
 
-
-# The fuzz factor timeout to discern between user action and gedit quitting
-EXIT_TIMEOUT = 2
-# Timeout within which we expect gedit to create the default empty document
-# after the plugin has finished loading
-OPEN_TIMEOUT = 2
 
 # To facilitate debugging a schema, copy it to /usr/share/glib-2.0/schemas/ and
 # run glib-compile-schemas on that dir. Then you can query with gsettings.
@@ -55,17 +56,22 @@ def get_settings():
     return Gio.Settings.new_full(schema, None, schema_path)
 
 
+def static_settings(settings):
+    if settings:
+        return (settings.get_value('exit-timeout').get_double(),
+                settings.get_value('launch-timeout').get_double())
+    return (1, 1)
+
+
 class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
     """This class serves no other purpose than to make the code somewhat cleaner
-    by having it handle all global logic.
-    I had hoped there would be an event signalling that GEdit is about to quit,
-    but there is none. This means we still need to rely on timers to discern
-    between user actions and the app quitting. Ugh."""
+    by having it handle all global logic."""
 
     __gtype_name__ = 'SKeeperAppActivatable'
     app = GObject.Property(type=Gedit.App)
 
     settings = get_settings()
+    exit_timeout, launch_timeout = static_settings(settings)
 
     # When activating the plugin for the first time, this will be stuck on True and state
     # will not be saved, hence Gedit must be quitted and reopened to activate the plugin.
@@ -73,16 +79,18 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
     loaded_time = None
     global_timer = None
     global_lock = threading.Lock()
-    # One entry per window, key is UUID, value is a list of file URIs in the window
-    # that claimed this UUID.
-    global_state = {}
-    # Keys are UUIDs, values are the same kind of dicts as pending_states.
-    # This will only contain pending window delete states.
+    # One entry per window, key is UUID, value is a list of tab groups in the window
+    # that claimed this UUID, each containing a list of file URIs.
+    files_per_window = {}
+    # Keys are UUIDs, values are dicts with key = timestamp when the state was recorded,
+    # value is the same list of tab groups as above (which should always be empty because
+    # only pending window delete states should end up in here).
     global_pending = {}
 
     def __init__(self):
         GObject.Object.__init__(self)
-        SK_LOG.debug('Created new AA instance')
+        SK_LOG.debug('Created new AA instance, timeouts: %g, %g',
+                     self.exit_timeout, self.launch_timeout)
 
     def do_activate(self):
         SK_LOG.debug('AA received activate event')
@@ -95,19 +103,32 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
         SKeeperAppActivatable.save_state()
 
     @classmethod
+    def mark_loaded(cls):
+        """Mark loading stage as completed."""
+        cls.loading = False
+        cls.loaded_time = time.time()
+
+    @classmethod
+    def just_loaded(cls):
+        """Returns whether mark_loaded was invoked less than launch_timeout ago."""
+        if cls.loading:
+            return False
+        return time.time() - cls.loaded_time < cls.launch_timeout
+
+    @classmethod
     def save_state(cls):
         """Persist the global state of all windows in gsettings."""
         if not cls.settings:
             # Things are badly broken
             return
         with cls.global_lock:
-            payload = json.dumps(cls.global_state)
-            cls.settings.set_value('state', GLib.Variant("s", payload))
+            payload = json.dumps(cls.files_per_window)
+            cls.settings.set_value('window-files', GLib.Variant("s", payload))
 
     @classmethod
     def process_global_pending(cls, now=None):
         """If there are pending global states, apply the youngest ones whose
-        timestamp is at least EXIT_TIMEOUT ago."""
+        timestamp is at least exit_timeout ago."""
         with cls.global_lock:
             if cls.global_timer:
                 cls.global_timer.cancel()
@@ -121,15 +142,15 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
                 pending_states = cls.global_pending[win_id]
                 new_pending_states = {}
                 for stamp in sorted(pending_states, reverse=True):
-                    if now - stamp < EXIT_TIMEOUT:
+                    if now - stamp < cls.exit_timeout:
                         new_pending_states[stamp] = pending_states[stamp]
                         continue
                     if pending_states[stamp]:
-                        cls.global_state[win_id] = pending_states[stamp]
+                        cls.files_per_window[win_id] = pending_states[stamp]
                         SK_LOG.debug('  applied new global state for %s', win_id)
                     else:
-                        if win_id in cls.global_state:
-                            del cls.global_state[win_id]
+                        if win_id in cls.files_per_window:
+                            del cls.files_per_window[win_id]
                         SK_LOG.debug('  cleared global state for %s', win_id)
                     changed = True
                     break
@@ -143,11 +164,11 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
 
     @classmethod
     def schedule_global_pending(cls):
-        """Schedule a process_global_pending call slightly beyond EXIT_TIMEOUT.
+        """Schedule a process_global_pending call slightly beyond exit_timeout.
         No global timer must be pending when calling this."""
         SK_LOG.debug("Scheduling global_pending...")
         with cls.global_lock:
-            cls.global_timer = threading.Timer(0.1 + EXIT_TIMEOUT, cls.process_global_pending)
+            cls.global_timer = threading.Timer(0.1 + cls.exit_timeout, cls.process_global_pending)
             cls.global_timer.start()
 
     @classmethod
@@ -161,6 +182,7 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
 
 class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
     """One of these will be created for every Gedit window."""
+
     __gtype_name__ = "SKeeperWindowActivatable"
     window = GObject.property(type=Gedit.Window)
 
@@ -177,9 +199,9 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
 
     def process_pending(self, now=None):
         """If there are pending states, apply the youngest one whose timestamp is
-        at least EXIT_TIMEOUT ago."""
+        at least exit_timeout ago."""
         # Only one timer must be active at any time. By cancelling a pending timer,
-        # a state update may in the worst case be further delayed by EXIT_TIMEOUT.
+        # a state update may in the worst case be further delayed by exit_timeout.
         with self.timer_lock:
             # Avoid race condition between checking for the timer and cancelling/wiping it.
             # Note that I'm a n00b when it comes to threads in Python and I have no idea
@@ -195,10 +217,10 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
         changed = False
         new_pending_states = {}
         for stamp in sorted(self.pending_states, reverse=True):
-            if now - stamp < EXIT_TIMEOUT:
+            if now - stamp < SKeeperAppActivatable.exit_timeout:
                 new_pending_states[stamp] = self.pending_states[stamp]
                 continue
-            SKeeperAppActivatable.global_state[self.uuid] = self.pending_states[stamp]
+            SKeeperAppActivatable.files_per_window[self.uuid] = self.pending_states[stamp]
             changed = True
             SK_LOG.debug('  applied new state for %s', self.uuid)
             break
@@ -209,11 +231,12 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
             SKeeperAppActivatable.save_state()
 
     def schedule_pending(self):
-        """Schedule a process_pending call slightly beyond EXIT_TIMEOUT.
+        """Schedule a process_pending call slightly beyond exit_timeout.
         No timer must be pending when calling this."""
         SK_LOG.debug("Scheduling process_pending...")
         with self.timer_lock:
-            self.pending_timer = threading.Timer(0.1 + EXIT_TIMEOUT, self.process_pending)
+            self.pending_timer = threading.Timer(0.1 + SKeeperAppActivatable.exit_timeout,
+                                                 self.process_pending)
             self.pending_timer.start()
 
     def cancel_pending(self):
@@ -226,14 +249,22 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
 
     def get_state(self):
         """Obtain the list of files for this instance's window.'"""
-        window_uris = []
+        state = []
+        current_group = None
+        tab_group_index = -1
+
         for document in self.window.get_documents():
+            tab_group = Gedit.Tab.get_from_document(document).get_parent()
+            if tab_group != current_group:
+                tab_group_index += 1
+                current_group = tab_group
+                state.append([])
             gfile = document.get_location()
             if gfile:
                 uri = gfile.get_uri()
                 if uri:
-                    window_uris.append(gfile.get_uri())
-        return window_uris
+                    state[tab_group_index].append(gfile.get_uri())
+        return state
 
     def _register_handler(self, handler, call):
         """Shortcut"""
@@ -287,8 +318,7 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
         if not tab.get_document().get_location():
             # Yet another timer heuristic to detect the default empty tab being
             # opened right after the plugin has loaded everything.
-            if (SKeeperAppActivatable.global_state and
-                    time.time() - SKeeperAppActivatable.loaded_time < OPEN_TIMEOUT):
+            if SKeeperAppActivatable.files_per_window and SKeeperAppActivatable.just_loaded():
                 SK_LOG.debug('  scheduling removal of default empty tab')
                 # We can't just call close_tab(tab) here: causes a core dump, maybe because
                 # Gedit still tries to do something with the tab after sending this event
@@ -297,14 +327,14 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
             return False
 
         self.cancel_pending()
-        SKeeperAppActivatable.global_state[self.uuid] = self.get_state()
+        SKeeperAppActivatable.files_per_window[self.uuid] = self.get_state()
         SKeeperAppActivatable.save_state()
         return False
 
     def on_tab_change_event(self, _window, _tab=None):
         """Changed tab state, could be a remove.
         Create a pending state because we can't be sure whether this state needs
-        to be persisted until EXIT_TIMEOUT has expired."""
+        to be persisted until exit_timeout has expired."""
         if SKeeperAppActivatable.loading:
             return False
         timestamp = time.time()
@@ -325,7 +355,7 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
 
         if not SKeeperAppActivatable.settings:
             return
-        payload = SKeeperAppActivatable.settings.get_value('state').get_string()
+        payload = SKeeperAppActivatable.settings.get_value('window-files').get_string()
         SK_LOG.debug('  JSON dump read: %s', payload)
 
         saved_state = {}
@@ -347,22 +377,34 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
         uuids_left = [key for key in saved_state.keys()]
         for win_id in saved_state:
             uuids_left.remove(win_id)
-            if win_id in SKeeperAppActivatable.global_state:
+            if win_id in SKeeperAppActivatable.files_per_window:
                 continue
-            files = saved_state[win_id]
-            if not files:
+            groups = saved_state[win_id]
+            if not groups:
                 continue
 
             SK_LOG.debug("  Claiming %s", win_id)
             self.uuid = win_id
-            SK_LOG.debug("    Files in %s: %d", win_id, len(files))
-            for document_uri in files:
-                location = Gio.file_new_for_uri(document_uri)
-                tab = self.window.get_tab_from_location(location)
-                if not tab:
+            SK_LOG.debug("    Groups in %s: %d", win_id, len(groups))
+            group_number = 0
+            for files in groups:
+                group_number += 1
+                SK_LOG.debug("      Files in group %d: %d", group_number, len(files))
+                tab_to_be_closed = None
+                if group_number > 1:
+                    self.window.activate_action('new-tab-group')
+                    # The tab group will be created with an empty document
+                    tab_to_be_closed = self.window.get_active_tab()
+
+                for document_uri in files:
+                    location = Gio.file_new_for_uri(document_uri)
                     self.window.create_tab_from_location(location, None, 0,
                                                          0, False, True)
-            SKeeperAppActivatable.global_state[win_id] = self.get_state()
+                    if tab_to_be_closed:
+                        self.window.close_tab(tab_to_be_closed)
+                        tab_to_be_closed = None
+
+            SKeeperAppActivatable.files_per_window[win_id] = self.get_state()
             break
 
         if uuids_left:
@@ -373,7 +415,6 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
             next_window.activate()
         else:
             SK_LOG.debug("Finished loading")
-            SKeeperAppActivatable.loading = False
-            SKeeperAppActivatable.loaded_time = time.time()
+            SKeeperAppActivatable.mark_loaded()
 
         self.window.disconnect(self._launch_handler)
