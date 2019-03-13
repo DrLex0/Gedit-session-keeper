@@ -48,8 +48,8 @@ Gedit 2.x.**
 
 Inspired by:
 
-* [Restore Tabs][https://github.com/Quixotix/gedit-restore-tabs] by Quixotix
-* [Ex-Mortis][https://github.com/jefferyto/gedit-ex-mortis] by Jeffery To
+* [Restore Tabs](https://github.com/Quixotix/gedit-restore-tabs) by Quixotix
+* [Ex-Mortis](https://github.com/jefferyto/gedit-ex-mortis) by Jeffery To
 
 
 ## License
