@@ -53,7 +53,9 @@ SK_LOG = logging.getLogger('SessionKeeper')
 SK_LOG.setLevel(logging.INFO)
 # For debugging, the following lines are very handy
 #SK_LOG.setLevel(logging.DEBUG)
-#SK_LOG.addHandler(logging.FileHandler("/tmp/SessionKeeper.log"))
+#SK_LOG_FH = logging.FileHandler("/tmp/SessionKeeper.log")
+#SK_LOG_FH.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
+#SK_LOG.addHandler(SK_LOG_FH)
 
 
 def get_settings():
@@ -105,6 +107,10 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
     # value is the same list of tab groups as above (which should always be empty because
     # only pending window delete states should end up in here).
     global_pending = {}
+    # For protection against lengthy quits (e.g. heavy system load while many windows are
+    # open). Set False when a window is closed, True when idle. Do not process
+    # global_pending when False.
+    been_idle = True
 
     def __init__(self):
         GObject.Object.__init__(self)
@@ -117,7 +123,7 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
     def do_deactivate(self):
         """Another upside of using an AppActivatable is that we have a single
         point to perform remaining global state handling when quitting."""
-        SK_LOG.debug('AA received deactivate event')
+        SK_LOG.info('SessionKeeper AppActivatable deactivating')
         SKeeperAppActivatable.process_global_pending()
         SKeeperAppActivatable.save_state()
 
@@ -153,6 +159,10 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
                 cls.global_timer.cancel()
                 cls.global_timer = None
 
+        if not cls.been_idle:
+            SK_LOG.debug("process_global_pending invoked but not been idle, skipping")
+            return
+
         changed = False
         with cls.global_lock:
             if not now:
@@ -182,6 +192,13 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
             cls.save_state()
 
     @classmethod
+    def set_idle(cls):
+        """Mark the app as being idle, meaning we assume not to be in the middle
+        of a lengthy quit process.'"""
+        SK_LOG.debug("We are idle")
+        cls.been_idle = True
+
+    @classmethod
     def schedule_global_pending(cls):
         """Schedule a process_global_pending call slightly beyond exit_timeout.
         No global timer must be pending when calling this."""
@@ -189,6 +206,8 @@ class SKeeperAppActivatable(GObject.Object, Gedit.AppActivatable):
         with cls.global_lock:
             cls.global_timer = threading.Timer(0.1 + cls.exit_timeout, cls.process_global_pending)
             cls.global_timer.start()
+            cls.been_idle = False
+            GLib.idle_add(cls.set_idle)
 
     @classmethod
     def dump_final_states(cls, win_id, pending_states):
@@ -316,7 +335,7 @@ class SKeeperWindowActivatable(GObject.Object, Gedit.WindowActivatable):
         """As far as I can see from debugging, this is only invoked when the user
         closes a window, not when quitting the entire app."""
         timestamp = time.time()
-        SK_LOG.warning('window_delete_event in %s', self.uuid)
+        SK_LOG.debug('on_window_delete_event in %s', self.uuid)
         self.process_pending(timestamp)
         self.pending_states[timestamp] = []
         # Do not schedule anything, this will happen in dump_final_states

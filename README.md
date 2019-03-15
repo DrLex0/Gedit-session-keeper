@@ -12,9 +12,16 @@ whistles. This should reduce the risk that the plugin breaks each time one of
 those bells or whistles is changed in a Gedit update. I'm sure there are
 fancier session savers, but this one does all I expect from it.
 
+
+## Limitations
+
 The plugin relies on timings to decide when to update changes in session state.
 This means e.g. if you close a document and then immediately quit Gedit, the
 document will still be reopened the next time you start Gedit.
+
+Make sure to save all documents before quitting. If the “save changes” dialog
+shows up during quitting while multiple windows were open, then some of them
+may fail to restore.
 
 This plugin is for Gedit versions 3.28 or above. It might work with lower 3.x
 versions but this has not been tested. **This plugin is NOT compatible with
